@@ -1,3 +1,4 @@
+
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
@@ -77,8 +78,8 @@ def select_best_component_ml(df, model, feature_cols, budget, filters=None, pric
     if candidates.empty:
         return None
 
-    price_threshold = candidates["Price"].quantile(price_top_percentile)
-    top_candidates = candidates[candidates["Price"] >= price_threshold]
+    price_threshold = 0  # No filtering by percentile
+    top_candidates = candidates  # Use all candidates, no percentile filter
     if top_candidates.empty:
         top_candidates = candidates
 
@@ -114,7 +115,7 @@ def select_ssd(min_storage, budget):
     return df.sort_values("Capacity", ascending=False).iloc[0]
 
 # === Train Models ===
-gpu_model = train_value_model(gpu_df, ["VRAM", "TDP", "G3D"], "G3D / Price")
+gpu_model = train_value_model(gpu_df, ["VRAM", "TDP", "G3D"], "G3D")
 cpu_model = train_value_model(cpu_df, ["Benchmark", "TDP"], "Benchmark / Price")
 ssd_model = train_value_model(ssd_df, ["Capacity"], "Capacity / Price")
 
