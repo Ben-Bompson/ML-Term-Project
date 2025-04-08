@@ -69,7 +69,7 @@ def train_value_model(df, feature_cols, target_expr):
     return pipeline
 
 # === Hybrid ML Selector ===
-def select_best_component_ml(df, model, feature_cols, budget, filters=None, price_top_percentile=0.75):
+def select_best_component_ml(df, model, feature_cols, budget, filters=None):
     candidates = df.copy()
     if filters:
         for condition in filters:
@@ -78,45 +78,35 @@ def select_best_component_ml(df, model, feature_cols, budget, filters=None, pric
     if candidates.empty:
         return None
 
-    price_threshold = 0  # No filtering by percentile
-    top_candidates = candidates  # Use all candidates, no percentile filter
-    if top_candidates.empty:
-        top_candidates = candidates
+    X = candidates[feature_cols]
+    candidates = candidates.copy()
+    candidates["PredictedScore"] = model.predict(X)
+    return candidates.sort_values("PredictedScore", ascending=False).iloc[0]
 
-    X = top_candidates[feature_cols]
-    top_candidates = top_candidates.copy()
-    top_candidates["PredictedScore"] = model.predict(X)
-    best = top_candidates.sort_values("PredictedScore", ascending=False).iloc[0]
-    return best
-
-# === Rule-Based Selectors ===
+# === Rule-Based Selectors with best affordable part ===
 def select_mobo(socket, budget):
     df = mobo_df[(mobo_df["Socket"] == socket) & (mobo_df["Price"] <= budget)]
-    if df.empty:
-        return None
+    if df.empty: return None
     return df.sort_values("Price", ascending=False).iloc[0]
 
 def select_ram(ram_type, min_ram, budget):
     df = ram_df[(ram_df["Type"] == ram_type) & (ram_df["Capacity"] >= min_ram) & (ram_df["Price"] <= budget)]
-    if df.empty:
-        return None
-    return df.sort_values("Capacity", ascending=False).iloc[0]
+    if df.empty: return None
+    return df.sort_values(["Capacity", "Price"], ascending=[False, False]).iloc[0]
 
-def select_psu(total_tdp, budget):
-    df = psu_df[(psu_df["Wattage"] >= total_tdp) & (psu_df["Price"] <= budget)]
-    if df.empty:
-        return None
-    return df.sort_values("Wattage", ascending=True).iloc[0]
+def select_psu(tdp, budget):
+    df = psu_df[(psu_df["Wattage"] >= tdp) & (psu_df["Price"] <= budget)]
+    if df.empty: return None
+    return df.sort_values(["Wattage", "Price"], ascending=[False, False]).iloc[0]
 
 def select_ssd(min_storage, budget):
     df = ssd_df[(ssd_df["Capacity"] >= min_storage) & (ssd_df["Price"] <= budget)]
-    if df.empty:
-        return None
-    return df.sort_values("Capacity", ascending=False).iloc[0]
+    if df.empty: return None
+    return df.sort_values(["Capacity", "Price"], ascending=[False, False]).iloc[0]
 
 # === Train Models ===
 gpu_model = train_value_model(gpu_df, ["VRAM", "TDP", "G3D"], "G3D")
-cpu_model = train_value_model(cpu_df, ["Benchmark", "TDP"], "Benchmark / Price")
+cpu_model = train_value_model(cpu_df, ["Benchmark", "TDP"], "Benchmark")
 ssd_model = train_value_model(ssd_df, ["Capacity"], "Capacity / Price")
 
 # === GPU Selection ===
@@ -125,31 +115,24 @@ gpu = select_best_component_ml(
     ["VRAM >= 16000", "Brand in ['AMD', 'Nvidia', 'Intel']"]
 )
 
-# === Rebalance Budget if GPU selection fails ===
+# === Fallback ===
 if gpu is None:
     print("WARNING GPU could not be selected with default weight. Rebalancing budgets...")
     gpu = gpu_df.query("VRAM >= 16000 and Price == @min_gpu_price").iloc[0]
     cpu = cpu_df[cpu_df["Price"] == min_cpu_price].iloc[0]
     socket = cpu["Socket"]
     mobo = mobo_df[(mobo_df["Socket"] == socket)].sort_values("Price").head(1)
-    if mobo.empty:
-        print("ERROR No suitable Motherboard found for the selected CPU socket.")
-        exit()
+    if mobo.empty: print("ERROR No suitable Motherboard found."); exit()
     mobo = mobo.iloc[0]
     ram = ram_df[(ram_df["Type"] == mobo["RAM Type"]) & (ram_df["Capacity"] >= 8)].sort_values("Price").head(1)
-    if ram.empty:
-        print("ERROR No compatible RAM found within the budget.")
-        exit()
+    if ram.empty: print("ERROR No compatible RAM found."); exit()
     ram = ram.iloc[0]
     total_tdp = (gpu["TDP"] + cpu["TDP"]) * 2
     psu = psu_df[psu_df["Wattage"] >= total_tdp].sort_values("Price").head(1)
-    if psu.empty:
-        print("ERROR Rebalanced PSU not found for required wattage.")
-        exit()
+    if psu.empty: print("ERROR PSU not found."); exit()
     psu = psu.iloc[0]
     ssd = ssd_df[ssd_df["Price"] == min_ssd_price].iloc[0]
     r_budget = budget - sum([gpu["Price"], cpu["Price"], mobo["Price"], ram["Price"], psu["Price"], ssd["Price"]])
-
     print("Final PC Build (Fallback Mode):")
     print("----------------------------------")
     print(f"GPU: {gpu['GPU Name']} (${gpu['Price']})")
@@ -164,47 +147,34 @@ if gpu is None:
 # === Standard Selection ===
 r_budget -= gpu["Price"]
 cpu = select_best_component_ml(cpu_df, cpu_model, ["Benchmark", "TDP"], budget * weights["CPU"])
-if cpu is None:
-    print("ERROR No suitable CPU found within the budget.")
-    exit()
+if cpu is None: print("ERROR No suitable CPU found."); exit()
 r_budget -= cpu["Price"]
 socket = cpu["Socket"]
 
 mobo = select_mobo(socket, budget * weights["MOBO"])
-if mobo is None:
-    print("ERROR No suitable Motherboard found for the selected CPU socket.")
-    exit()
+if mobo is None: print("ERROR No suitable Motherboard found."); exit()
 r_budget -= mobo["Price"]
 
 ram = select_ram(mobo["RAM Type"], 8, budget * weights["RAM"])
-if ram is None:
-    print("ERROR No compatible RAM found within the budget.")
-    exit()
+if ram is None: print("ERROR No compatible RAM found."); exit()
 r_budget -= ram["Price"]
 
 total_tdp = (gpu["TDP"] + cpu["TDP"]) * 2
 psu = select_psu(total_tdp, budget * weights["PSU"])
-if psu is None:
-    print("ERROR No suitable PSU found for the power requirement.")
-    exit()
+if psu is None: print("ERROR No suitable PSU found."); exit()
 r_budget -= psu["Price"]
 
 ssd = select_ssd(500, budget * weights["SSD"])
-if ssd is None:
-    print("ERROR No suitable SSD found within the budget.")
-    exit()
+if ssd is None: print("ERROR No suitable SSD found."); exit()
 r_budget -= ssd["Price"]
 
 # === Final Build Summary ===
-final_build = {
-    "GPU": f'{gpu["GPU Name"]} (${gpu["Price"]})',
-    "CPU": f'{cpu["CPU Name"]} (${cpu["Price"]})',
-    "Motherboard": f'{mobo["Chipset"]} (${mobo["Price"]})',
-    "RAM": f'{ram["Capacity"]}GB {ram["Type"]} (${ram["Price"]})',
-    "PSU": f'{psu["Wattage"]}W 80+ {psu["Efficiency"]} (${psu["Price"]})',
-    "SSD": f'{ssd["Capacity"]}GB {ssd["Type"]} (${ssd["Price"]})',
-    "Remaining Budget": r_budget
-}
-
-for part, info in final_build.items():
-    print(f"{part}: {info}")
+print("\nFinal PC Build")
+print("----------------------------------")
+print(f"GPU: {gpu['GPU Name']} (${gpu['Price']})")
+print(f"CPU: {cpu['CPU Name']} (${cpu['Price']})")
+print(f"Motherboard: {mobo['Chipset']} (${mobo['Price']})")
+print(f"RAM: {ram['Capacity']}GB {ram['Type']} (${ram['Price']})")
+print(f"PSU: {psu['Wattage']}W 80+ {psu['Efficiency']} (${psu['Price']})")
+print(f"SSD: {ssd['Capacity']}GB {ssd['Type']} (${ssd['Price']})")
+print(f"Remaining Budget: ${r_budget:.2f}")
