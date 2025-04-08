@@ -1,6 +1,9 @@
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+
 import pandas as pd
 
-def find_gpu():
+""" def find_gpu():
     global r_budget
     gpu_budget = budget * weights["GPU"]
     prev_gpu = gpu_df.iloc[0]
@@ -12,7 +15,42 @@ def find_gpu():
                     return prev_gpu["GPU Name"], prev_gpu["TDP"]
                 r_budget -= i["Price"]
                 return i["GPU Name"], i["TDP"]
-            prev_gpu = i
+            prev_gpu = i """
+
+def train_gpu_model(gpu_df):
+    # Clean and prepare training data
+    gpu_df = gpu_df.copy()
+    gpu_df = gpu_df[gpu_df["Price"] > 0]  # remove invalid rows
+    gpu_df["ValueScore"] = gpu_df["VRAM"] / gpu_df["Price"]
+    
+    features = ["VRAM", "TDP"]
+    X = gpu_df[features]
+    y = gpu_df["ValueScore"]
+    
+    model = RandomForestRegressor(random_state=42)
+    model.fit(X, y)
+    return model
+
+def find_gpu_ml(model):
+    global r_budget
+    candidates = gpu_df[
+        (gpu_df["Brand"].isin(gpu_brands)) &
+        (gpu_df["VRAM"] >= min_vram) &
+        (gpu_df["Price"] <= budget * weights["GPU"])
+    ].copy()
+
+    if candidates.empty:
+        print("No suitable GPU found within budget.")
+        return None, 0
+
+    X_candidates = candidates[["VRAM", "TDP"]]
+    candidates["PredictedScore"] = model.predict(X_candidates)
+
+    best_gpu = candidates.sort_values(by="PredictedScore", ascending=False).iloc[0]
+    r_budget -= best_gpu["Price"]
+    return best_gpu["GPU Name"], best_gpu["TDP"]
+
+
 
 def find_cpu():
     global r_budget
@@ -96,11 +134,14 @@ if __name__ == "__main__":
     min_vram = 16000
     min_ram = 8
     min_storage = 500
-    budget = 1500
+    
+    #budget = 1500
+    budget = float(input("Enter your total budget: "))
     r_budget = budget
     weights = {"GPU": 0.4, "CPU": 0.2, "MOBO": 0.15, "RAM": 0.09, "PSU": 0.09, "SSD": 0.07}
 
-    gpu, g_tdp = find_gpu()
+    gpu_model = train_gpu_model(gpu_df)
+    gpu, g_tdp = find_gpu_ml(gpu_model)
     print(gpu+"\nRemaining budget: "+str(r_budget))
     
     cpu, socket, c_tdp = find_cpu()
