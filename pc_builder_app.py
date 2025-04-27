@@ -174,6 +174,6 @@ if budget >= min_required_budget:
         st.write(f"**SSD:** {final_build['SSD']['Capacity']}GB {final_build['SSD']['Type']} (${final_build['SSD']['Price']})")
         st.success(f"Remaining Budget: ${final_build['Remaining Budget']:.2f}")
     else:
-        st.error("Unable to build a system within the given budget even after all fallback attempts.")
+        st.error("Unable to build a system within the given budget even after fallback attempts.")
 else:
     st.warning(f"Minimum required budget to build a system is approximately ${min_required_budget:.2f}.")
