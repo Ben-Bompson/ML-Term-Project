@@ -1,9 +1,10 @@
 import pandas as pd
-import streamlit as st
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import matplotlib.pyplot as plt
 
 # === Load Data ===
 gpu_df = pd.read_csv("./Data/GPU Data.csv")
@@ -13,8 +14,13 @@ ram_df = pd.read_csv("./Data/RAM Data.csv")
 psu_df = pd.read_csv("./Data/PSU Data.csv")
 ssd_df = pd.read_csv("./Data/SSD Data.csv")
 
-st.title("PC Build Optimizer")
-budget = st.number_input("Enter your total budget", min_value=100.0, value=1500.0, step=50.0)
+# === Budgeting ===
+while True:
+    try:
+        budget = float(input("Enter your total budget (e.g. 3000): "))
+        break
+    except ValueError:
+        print("ERROR Invalid input. Please enter a number (e.g. 3000).")
 
 # === Budget Feasibility Check ===
 def get_min_valid_part(df, price_col="Price", extra_filter=None):
@@ -38,10 +44,14 @@ min_required_budget = sum([
     min_ram_price, min_ssd_price, min_psu_price
 ])
 
+if budget < min_required_budget - 10:
+    print(f"ERROR Budget too low to build a system. Minimum required: ${min_required_budget:.2f}")
+    exit()
+
 weights = {"GPU": 0.4, "CPU": 0.2, "MOBO": 0.15, "RAM": 0.09, "PSU": 0.09, "SSD": 0.07}
 
-# === ML Trainer ===
-def train_value_model(df, feature_cols, target_expr):
+# === ML Trainer with Evaluation ===
+def train_value_model(df, feature_cols, target_expr, label):
     df = df.copy()
     df = df[df["Price"] > 0]
     df["ValueScore"] = df.eval(target_expr)
@@ -56,6 +66,18 @@ def train_value_model(df, feature_cols, target_expr):
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     pipeline.fit(X_train, y_train)
+
+    y_pred = pipeline.predict(X_test)
+
+    mae = mean_absolute_error(y_test, y_pred)
+    mse = mean_squared_error(y_test, y_pred)
+    r2 = r2_score(y_test, y_pred)
+
+    print(f"=== {label} Model Evaluation ===")
+    print(f"MAE: {mae:.2f}")
+    print(f"MSE: {mse:.2f}")
+    print(f"R^2 Score: {r2:.2f}\n")
+
     return pipeline
 
 def select_best_component_ml(df, model, feature_cols, budget, filters=None):
@@ -127,53 +149,56 @@ def attempt_build_with_gpu(gpu_row, budget, weights):
     build["Remaining Budget"] = remaining_budget
     return build
 
-if budget >= min_required_budget:
-    gpu_model = train_value_model(gpu_df, ["VRAM", "TDP", "G3D"], "G3D")
-    cpu_model = train_value_model(cpu_df, ["Benchmark", "TDP"], "Benchmark")
-    ssd_model = train_value_model(ssd_df, ["Capacity"], "Capacity / Price")
+# === Train Models ===
+gpu_model = train_value_model(gpu_df, ["VRAM", "TDP", "G3D"], "G3D", "GPU")
+cpu_model = train_value_model(cpu_df, ["Benchmark", "TDP"], "Benchmark", "CPU")
+ssd_model = train_value_model(ssd_df, ["Capacity"], "Capacity / Price", "SSD")
 
-    gpu_candidates = gpu_df.query("VRAM >= 16000 and Brand in ['AMD', 'Nvidia', 'Intel']")
-    gpu_candidates = gpu_candidates[gpu_candidates["Price"] > 0].copy()
-    gpu_candidates["PredictedScore"] = gpu_model.predict(gpu_candidates[["VRAM", "TDP", "G3D"]])
-    gpu_candidates = gpu_candidates.sort_values("PredictedScore", ascending=False).reset_index(drop=True)
+# === GPU Candidates ===
+gpu_candidates = gpu_df.query("VRAM >= 16000 and Brand in ['AMD', 'Nvidia', 'Intel']")
+gpu_candidates = gpu_candidates[gpu_candidates["Price"] > 0]
+gpu_candidates = gpu_candidates.copy()
+gpu_candidates["PredictedScore"] = gpu_model.predict(gpu_candidates[["VRAM", "TDP", "G3D"]])
+gpu_candidates = gpu_candidates.sort_values("PredictedScore", ascending=False).reset_index(drop=True)
 
-    final_build = None
-    for _, gpu_row in gpu_candidates.iterrows():
-        result = attempt_build_with_gpu(gpu_row, budget, weights)
-        if result and result["Remaining Budget"] >= 0:
-            final_build = result
-            break
+# === Attempt PC Build with GPU Fallback ===
+final_build = None
+for _, gpu_row in gpu_candidates.iterrows():
+    result = attempt_build_with_gpu(gpu_row, budget, weights)
+    if result and result["Remaining Budget"] >= 0:
+        final_build = result
+        break
 
-    if final_build is None:
-        try:
-            gpu = gpu_df.query("VRAM >= 16000 and Price == @min_gpu_price").iloc[0]
-            cpu = cpu_df[cpu_df["Price"] == min_cpu_price].iloc[0]
-            mobo = mobo_df[(mobo_df["Socket"] == cpu["Socket"])]
-            mobo = mobo[mobo["Price"] == min_mobo_price].iloc[0]
-            ram = ram_df[(ram_df["Type"] == mobo["RAM Type"]) & (ram_df["Capacity"] >= 8) & (ram_df["Price"] == min_ram_price)].iloc[0]
-            psu = psu_df[psu_df["Wattage"] >= estimated_tdp]
-            psu = psu[psu["Price"] == min_psu_price].iloc[0]
-            ssd = ssd_df[(ssd_df["Capacity"] >= 500) & (ssd_df["Price"] == min_ssd_price)].iloc[0]
+# === Emergency Fallback with Rule-Based Selection Only ===
+if final_build is None:
+    try:
+        gpu = gpu_df.query("VRAM >= 16000 and Price == @min_gpu_price").iloc[0]
+        cpu = cpu_df[cpu_df["Price"] == min_cpu_price].iloc[0]
+        mobo = mobo_df[(mobo_df["Socket"] == cpu["Socket"])]
+        mobo = mobo[mobo["Price"] == min_mobo_price].iloc[0]
+        ram = ram_df[(ram_df["Type"] == mobo["RAM Type"]) & (ram_df["Capacity"] >= 8) & (ram_df["Price"] == min_ram_price)].iloc[0]
+        psu = psu_df[psu_df["Wattage"] >= estimated_tdp]
+        psu = psu[psu["Price"] == min_psu_price].iloc[0]
+        ssd = ssd_df[(ssd_df["Capacity"] >= 500) & (ssd_df["Price"] == min_ssd_price)].iloc[0]
 
-            remaining = budget - sum([gpu["Price"], cpu["Price"], mobo["Price"], ram["Price"], psu["Price"], ssd["Price"]])
-            final_build = {
-                "GPU": gpu, "CPU": cpu, "MOBO": mobo,
-                "RAM": ram, "PSU": psu, "SSD": ssd,
-                "Remaining Budget": remaining
-            }
-        except:
-            pass
+        remaining = budget - sum([gpu["Price"], cpu["Price"], mobo["Price"], ram["Price"], psu["Price"], ssd["Price"]])
+        final_build = {
+            "GPU": gpu, "CPU": cpu, "MOBO": mobo,
+            "RAM": ram, "PSU": psu, "SSD": ssd,
+            "Remaining Budget": remaining
+        }
+    except:
+        pass
 
-    if final_build:
-        st.subheader("Final PC Build")
-        st.write(f"**GPU:** {final_build['GPU']['GPU Name']} (${final_build['GPU']['Price']})")
-        st.write(f"**CPU:** {final_build['CPU']['CPU Name']} (${final_build['CPU']['Price']})")
-        st.write(f"**Motherboard:** {final_build['MOBO']['Chipset']} (${final_build['MOBO']['Price']})")
-        st.write(f"**RAM:** {final_build['RAM']['Capacity']}GB {final_build['RAM']['Type']} (${final_build['RAM']['Price']})")
-        st.write(f"**PSU:** {final_build['PSU']['Wattage']}W 80+ {final_build['PSU']['Efficiency']} (${final_build['PSU']['Price']})")
-        st.write(f"**SSD:** {final_build['SSD']['Capacity']}GB {final_build['SSD']['Type']} (${final_build['SSD']['Price']})")
-        st.success(f"Remaining Budget: ${final_build['Remaining Budget']:.2f}")
-    else:
-        st.error("Unable to build a system within the given budget even after all fallback attempts.")
+if final_build:
+    print("\nFinal PC Build")
+    print("----------------------------------")
+    print(f"GPU: {final_build['GPU']['GPU Name']} (${final_build['GPU']['Price']})")
+    print(f"CPU: {final_build['CPU']['CPU Name']} (${final_build['CPU']['Price']})")
+    print(f"Motherboard: {final_build['MOBO']['Chipset']} (${final_build['MOBO']['Price']})")
+    print(f"RAM: {final_build['RAM']['Capacity']}GB {final_build['RAM']['Type']} (${final_build['RAM']['Price']})")
+    print(f"PSU: {final_build['PSU']['Wattage']}W 80+ {final_build['PSU']['Efficiency']} (${final_build['PSU']['Price']})")
+    print(f"SSD: {final_build['SSD']['Capacity']}GB {final_build['SSD']['Type']} (${final_build['SSD']['Price']})")
+    print(f"Remaining Budget: ${final_build['Remaining Budget']:.2f}")
 else:
-    st.warning(f"Minimum required budget to build a system is approximately ${min_required_budget:.2f}.")
+    print("ERROR: Unable to build a system within the given budget even after all fallback attempts.")
