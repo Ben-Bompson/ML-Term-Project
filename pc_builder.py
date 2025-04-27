@@ -3,6 +3,8 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import matplotlib.pyplot as plt
 
 # === Load Data ===
 gpu_df = pd.read_csv("./Data/GPU Data.csv")
@@ -48,8 +50,8 @@ if budget < min_required_budget - 10:
 
 weights = {"GPU": 0.4, "CPU": 0.2, "MOBO": 0.15, "RAM": 0.09, "PSU": 0.09, "SSD": 0.07}
 
-# === ML Trainer ===
-def train_value_model(df, feature_cols, target_expr):
+# === ML Trainer with Evaluation ===
+def train_value_model(df, feature_cols, target_expr, label):
     df = df.copy()
     df = df[df["Price"] > 0]
     df["ValueScore"] = df.eval(target_expr)
@@ -64,6 +66,18 @@ def train_value_model(df, feature_cols, target_expr):
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     pipeline.fit(X_train, y_train)
+
+    y_pred = pipeline.predict(X_test)
+
+    mae = mean_absolute_error(y_test, y_pred)
+    mse = mean_squared_error(y_test, y_pred)
+    r2 = r2_score(y_test, y_pred)
+
+    print(f"=== {label} Model Evaluation ===")
+    print(f"MAE: {mae:.2f}")
+    print(f"MSE: {mse:.2f}")
+    print(f"R^2 Score: {r2:.2f}\n")
+
     return pipeline
 
 def select_best_component_ml(df, model, feature_cols, budget, filters=None):
@@ -136,9 +150,9 @@ def attempt_build_with_gpu(gpu_row, budget, weights):
     return build
 
 # === Train Models ===
-gpu_model = train_value_model(gpu_df, ["VRAM", "TDP", "G3D"], "G3D")
-cpu_model = train_value_model(cpu_df, ["Benchmark", "TDP"], "Benchmark")
-ssd_model = train_value_model(ssd_df, ["Capacity"], "Capacity / Price")
+gpu_model = train_value_model(gpu_df, ["VRAM", "TDP", "G3D"], "G3D", "GPU")
+cpu_model = train_value_model(cpu_df, ["Benchmark", "TDP"], "Benchmark", "CPU")
+ssd_model = train_value_model(ssd_df, ["Capacity"], "Capacity / Price", "SSD")
 
 # === GPU Candidates ===
 gpu_candidates = gpu_df.query("VRAM >= 16000 and Brand in ['AMD', 'Nvidia', 'Intel']")
